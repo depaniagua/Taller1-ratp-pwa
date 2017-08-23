@@ -28,23 +28,22 @@
         app.toggleAddDialog(true);
     });
 
-    document.getElementById('butAddCity').addEventListener('click', function () {
-
-
+    document.getElementById('butAddCity').addEventListener('click', function() {
+        // Add the newly selected city
         var select = document.getElementById('selectTimetableToAdd');
         var selected = select.options[select.selectedIndex];
         var key = selected.value;
         var label = selected.textContent;
         if (!app.selectedTimetables) {
-            app.selectedTimetables = [];
+          app.selectedTimetables = [];
         }
         app.getSchedule(key, label);
         app.selectedTimetables.push({key: key, label: label});
+        app.saveSelectedTimetables();
         app.toggleAddDialog(false);
-    });
+    });        
 
     document.getElementById('butAddCancel').addEventListener('click', function () {
-        // Close the add new city dialog
         app.toggleAddDialog(false);
     });
 
@@ -85,6 +84,17 @@
             app.container.appendChild(card);
             app.visibleCards[key] = card;
         }
+
+        var cardLastUpdatedElem = card.querySelector('.card-last-updated');
+        var cardLastUpdated = cardLastUpdatedElem.textContent;
+        if (cardLastUpdated) {
+          cardLastUpdated = new Date(cardLastUpdated);
+          // Bail if the card has more recent data then the data
+          if (dataLastUpdated.getTime() < cardLastUpdated.getTime()) {
+            return;
+          }
+        }
+
         card.querySelector('.card-last-updated').textContent = data.created;
 
         var scheduleUIs = card.querySelectorAll('.schedule');
@@ -112,6 +122,20 @@
 
     app.getSchedule = function (key, label) {
         var url = 'https://api-ratp.pierre-grimaud.fr/v3/schedules/' + key;
+
+        if ('caches' in window) {
+            caches.match(url).then(function(response) {
+              if (response) {
+                response.json().then(function updateFromCache(json) {
+                  var results = json.query.results;
+                  results.key = key;
+                  results.label = label;
+                  results.created = json.query.created;
+                  app.updateTimetableCard(results);
+                });
+              }
+            });
+        }
 
         var request = new XMLHttpRequest();
         request.onreadystatechange = function () {
@@ -142,14 +166,41 @@
         });
     };
 
+    app.saveSelectedTimetables = function() {
+        var selectedTimetables = JSON.stringify(app.selectedTimetables);
+        localStorage.selectedTimetables = selectedTimetables;
+
+        if (!('indexedDB' in window)) {
+            console.log('El navegador no soporta IndexedDB');
+        }
+
+        var request = window.indexedDB.open("Schedule", 1);
+        var db;
+        
+        request.onupgradeneeded = function(event) {
+            var db = event.target.result;
+            var objectStore = db.createObjectStore("TimeTables", {keyPath: "key", autoIncrement: true});
+            objectStore.add(initialStationTimetable);
+        }
+
+        request.onsuccess = function(event) {
+            db = request.result;
+            var add = db.transaction(["TimeTables"], "readwrite");
+            var store = add.objectStore("TimeTables").add(app.selectedTimetables);
+        };
+
+        request.onerror = function(event) {
+            console.log("Error al abrir la base de datos");
+        };
+               
+    };
+
     /*
      * Fake weather data that is presented when the user first uses the app,
      * or when the user has not saved any cities. See startup code for more
      * discussion.
      */
-
     var initialStationTimetable = {
-
         key: 'metros/1/bastille/A',
         label: 'Bastille, Direction La Défense',
         created: '2017-07-18T17:08:42+02:00',
@@ -164,10 +215,7 @@
                 message: '5 mn'
             }
         ]
-
-
-    };
-
+    };        
 
     /************************************************************************
      *
@@ -179,9 +227,24 @@
      *   Instead, check out IDB (https://www.npmjs.com/package/idb) or
      *   SimpleDB (https://gist.github.com/inexorabletash/c8069c042b734519680c)
      ************************************************************************/
+    
+    app.selectedTimetables = localStorage.selectedTimetables;
+    if (app.selectedTimetables) {
+        app.selectedTimetables = JSON.parse(app.selectedTimetables);
+        app.selectedTimetables.forEach(function(city) {
+        app.getSchedule(city.key, city.label);
+    });
+    } else {
+        app.updateTimetableCard(initialStationTimetable);
+        app.selectedTimetables = [
+            {key: initialStationTimetable.key, label: initialStationTimetable.label}
+        ];
+        app.saveSelectedTimetables();
+    }
 
-    app.getSchedule('metros/1/bastille/A', 'Bastille, Direction La Défense');
-    app.selectedTimetables = [
-        {key: initialStationTimetable.key, label: initialStationTimetable.label}
-    ];
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker
+                 .register('./service-worker.js')
+                 .then(function() { console.log('Service Worker Registered'); });
+      }
 })();
